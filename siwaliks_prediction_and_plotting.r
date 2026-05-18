@@ -33,7 +33,7 @@ setwd("~/pCloudDrive/projects/siwaliks")
 siwadata <- read.csv("./model_inputs/fossils/dat_final.csv")
 
 ## Training data
-ModelledSubset <- fread("./model_inputs/subsetsubsetSpecies_div2_elev4000_Eurasia_PN.csv")
+ModelledSubset <- fread("./model_inputs/subsetsubsetSpecies_div2_elev2500_Eurasia_PN.csv")
 
 ## Remove the easternmost tip of Siberia, which may cause troubles
 ## because of the coordinates 
@@ -41,16 +41,16 @@ ModelledSubset <- ModelledSubset[ModelledSubset$X > -20 & ModelledSubset$X < 179
 
 
 ## Subset only required variables
-modeldataBio12 <- ModelledSubset[, c("X", "Y", "BIO12_Mean", "HYP", "ALX", "BUN", "SF", "OT")]
-modeldataBio01 <- ModelledSubset[, c("X", "Y", "BIO01_Mean", "HYP", "ALX", "BUN", "SF", "OT")]
+modeldataBio12 <- ModelledSubset[, c("X", "Y", "BIO12_Mean", "HYP", "ALX", "BUN", "OT")]
+modeldataBio01 <- ModelledSubset[, c("X", "Y", "BIO01_Mean", "ALX", "SF")]
 
 ## Correlations between ecometric variables in the training data
 Mbio12 <- cor(modeldataBio12[, 3:ncol(modeldataBio12)], method = "spearman")
 Mbio01 <- cor(modeldataBio01[, 3:ncol(modeldataBio01)], method = "spearman")
 
-## Let's leave SF out, if it is not reliable for these age ranges
-dataBio12 <- modeldataBio12[, !"SF"]
-dataBio01 <- modeldataBio01[, !"SF"]
+# ## Let's leave SF out, if it is not reliable for these age ranges
+# dataBio12 <- modeldataBio12[, !"SF"]
+# dataBio01 <- modeldataBio01[, !"SF"]
 #################################################################################################
 
 ## Define the modelling tasks (predicting Pann (bio12) and Tann (bio1))
@@ -273,36 +273,125 @@ learner_gamT$encapsulate(method="evaluate", fallback = lrn("regr.featureless"))
 
 #######################
 
-## Benchmarking
+#######################################################
+###########################
+
+##### Linear models learner
+##These Learners are not really needed here but wrapped the equations into mlr3 learners so that they go through the exact same spacial folds as other models to calculate rmse
+
+LearnerRegrLmMat = R6::R6Class("LearnerRegrLmMat",
+                               inherit = mlr3::LearnerRegr,
+                               public = list(
+                                 initialize = function() {
+                                   super$initialize(
+                                     id = "regr.lm_mat",
+                                     feature_types = c("numeric"),
+                                     predict_types = "response"
+                                   )
+                                 }
+                               ),
+                               private = list(
+                                 .train = function(task) { list() },
+                                 .predict = function(task) {
+                                   newdata = task$data(cols = task$feature_names)
+                                   pred = 27 - 28.5 * newdata$ALX
+                                   list(response = pred)
+                                 }
+                               )
+)
+
+## MAP
+LearnerRegrLmMap = R6::R6Class("LearnerRegrLmMap",
+                               inherit = mlr3::LearnerRegr,
+                               public = list(
+                                 initialize = function() {
+                                   super$initialize(
+                                     id = "regr.lm_map",
+                                     feature_types = c("numeric"),
+                                     predict_types = "response"
+                                   )
+                                 }
+                               ),
+                               private = list(
+                                 .train = function(task) { list() },
+                                 .predict = function(task) {
+                                   newdata = task$data(cols = task$feature_names)
+                                   pred = 2491 - 289 * newdata$HYP - 841 * newdata$LOP
+                                   list(response = pred)
+                                 }
+                               )
+)
+
+
+## Create learners
+learner_lm_mat = LearnerRegrLmMat$new()
+learner_lm_mat$encapsulate(method = "evaluate", fallback = lrn("regr.featureless"))
+
+learner_lm_map = LearnerRegrLmMap$new()
+learner_lm_map$encapsulate(method = "evaluate", fallback = lrn("regr.featureless"))
+
+
+##MAP task (HYP,LOP)
+
+modeldataBio12_lm <- ModelledSubset[, c("X", "Y", "BIO12_Mean", "HYP", "LOP")]
+modeldataBio12_lm <- modeldataBio12_lm[complete.cases(modeldataBio12_lm), ]
+
+taskBio12_lm = mlr3spatiotempcv::as_task_regr_st(
+  modeldataBio12_lm,
+  target = "BIO12_Mean",
+  id = "bio12_lm",
+  coordinate_names = c("X", "Y"),
+  crs = "EPSG:4326",
+  coords_as_features = FALSE
+)
+
+## Spatial CV scheme
+
+tuningCVschemeB = rsmp("repeated_spcv_block", range = rep(2000000L, 10), folds = 5, repeats = 10, 
+                       selection = "random", hexagon = FALSE)
+
+## Benchmark linear MAP
+
+designbio12_lm = benchmark_grid(taskBio12_lm, learner_lm_map, tuningCVschemeB)
+
+future::plan("multisession", workers = 10)
+bmrbio12_lm = benchmark(designbio12_lm)
+future:::ClusterRegistry("stop")
+
+bmrbio12_lm$aggregate(msr("regr.rmse"))[, .(learner_id, regr.rmse)]
+
+
+#####################################################################
+#####################################################################
+#######################
+
+## Benchmarking for non linear learners
 ## Here we set up the benchmarking for both Tann and Pann models
 ## You need this if you want to include a plot showing the performance of different
 ## modelling algorithms. However, this will take some time.
 
 tuningCVschemeB = rsmp("repeated_spcv_block", range = rep(2000000L, 10), folds = 5, repeats = 10, 
-selection = "random", hexagon = FALSE)
-
+                       selection = "random", hexagon = FALSE)
 
 tasksbio12 = taskBio12
 learnersbio12 = c(learner_svm_finP, learner_rf_finP, learner_gbm_finP,
-learner_mars_finP, learner_gamP, learner_scamP) 
+                  learner_mars_finP, learner_gamP, learner_scamP) 
 rsmp_scheme = tuningCVschemeB
 
 designbio12 = benchmark_grid(tasksbio12, learnersbio12, rsmp_scheme)
 
-
-
 tasksbio1 = taskBio1
 learnersbio1 = c(learner_svm_finT, learner_rf_finT, learner_gbm_finT,
-learner_mars_finT, learner_gamT, learner_scamT) 
+                 learner_mars_finT, learner_gamT, learner_scamT, learner_lm_mat)
 
 designbio1 = benchmark_grid(tasksbio1, learnersbio1, rsmp_scheme)
-
 
 ## Running the benchmarking experiments.
 
 ## THIS WILL TAKE SOME TIME!
 
 ## For Pann models
+
 future::plan("multisession", 
              workers = 10)
 bmrbio12 = benchmark(designbio12)
@@ -311,12 +400,12 @@ future:::ClusterRegistry("stop")
 
 bmrbio12$aggregate(msr("regr.rmse"))
 
-cairo_pdf("./model_outputs/bio12ModelComparison.pdf", width=8, height=5)
+cairo_pdf("./model_outputs/bio12ModelComparison_CU_20April.pdf", width=8, height=5)
 autoplot(bmrbio12, measure = msr("regr.rmse"))
 dev.off()
 
-
 ## For Tann models
+
 future::plan("multisession", 
              workers = 10)
 bmrbio1 = benchmark(designbio1)
@@ -325,18 +414,54 @@ future:::ClusterRegistry("stop")
 
 bmrbio1$aggregate(msr("regr.rmse"))
 
-cairo_pdf("./model_outputs/bio1ModelComparison.pdf", width=8, height=5)
+cairo_pdf("./model_outputs/bio1ModelComparison_CU_20April.pdf", width=8, height=5)
 autoplot(bmrbio1, measure = msr("regr.rmse"))
 dev.off()
-
 
 benchbio1 <- autoplot(bmrbio1, measure = msr("regr.rmse"))
 
 benchbio12 <- autoplot(bmrbio12, measure = msr("regr.rmse"), title="Cross-validated performace of Pann models")
 
+###################
+##############
+
 
 ## Plotting them together
-grid.arrange(benchbio1, benchbio12, ncol = 2)
+
+## Extract RMSE from all benchmarks
+## MAP - ML models
+rmse_map <- bmrbio12$score(msr("regr.rmse"))[, .(learner_id, regr.rmse)]
+rmse_map[, variable := "MAP (mm/yr)"]
+
+## MAP - published equation
+rmse_map_lm <- bmrbio12_lm$score(msr("regr.rmse"))[, .(learner_id, regr.rmse)]
+rmse_map_lm[, variable := "MAP (mm/yr)"]
+
+## MAT - all models including lm_mat
+rmse_mat <- bmrbio1$score(msr("regr.rmse"))[, .(learner_id, regr.rmse)]
+rmse_mat[, variable := "MAT (\u00B0C)"]
+
+## Combine everything
+all_rmse <- rbind(rmse_map, rmse_map_lm, rmse_mat)
+
+
+## Don't force shared factor levels
+all_rmse[, model := gsub("regr\\.", "", learner_id)]
+
+## Plot with free scales on both axes
+p <- ggplot(all_rmse, aes(x = model, y = regr.rmse, fill = model)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free") +
+  scale_fill_viridis_d() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        strip.text = element_text(size = 12, face = "bold")) +
+  labs(x = "Model", y = "RMSE", title = "Spatially cross-validated RMSE across all models trained on CU")
+
+cairo_pdf("./model_outputs/all_models_comparison_CU_20April.pdf", width = 12, height = 6)
+print(p)
+dev.off()
 
 
 ###################################################################
@@ -351,7 +476,7 @@ learner_xgb_finP$train(taskBio12)
 learner_mars_finP$train(taskBio12)
 learner_gamP$train(taskBio12)
 learner_scamP$train(taskBio12)
-
+learner_lm_map$train(taskBio12_lm)
 ## Tann models
 learner_svm_finT$train(taskBio1)
 learner_rf_finT$train(taskBio1)
@@ -360,7 +485,7 @@ learner_xgb_finT$train(taskBio1)
 learner_mars_finT$train(taskBio1)
 learner_gamT$train(taskBio1)
 learner_scamT$train(taskBio1)
-
+learner_lm_mat$train(taskBio1)
 
 #########################################################3
 ######################
@@ -368,7 +493,7 @@ learner_scamT$train(taskBio1)
 ### PREDICTING TO FOSSIL DATA
 
 ## Fossil data that only has relevant variables (predictors)
-siwadata2 <- siwadata[, c("HYP", "BUN", "OT", "ALX")]
+siwadata2 <- siwadata[, c("HYP", "BUN", "OT", "ALX", "SF")]
 
 
 predSiwBio12RF = as.data.table(learner_rf_finP$predict_newdata(newdata = siwadata2, task = taskBio12))
@@ -389,13 +514,27 @@ siwadata$precipPredMARS <- predSiwBio12MARS$response
 siwadata$precipPredGAM <- predSiwBio12GAM$response
 siwadata$precipPredXGB <- predSiwBio12XGB$response
 
-## Calculate the ensemble as a median of relevant model predictions
-siwadata$ensemblePrec <- rowMeans(siwadata[, 14:19]) ## Let's leave XGB out
+## MAP linear
+siwadata_liu <- siwadata[, c("HYP", "LOP")]
+predSiwBio12LM = as.data.table(learner_lm_map$predict_newdata(newdata = siwadata_liu, task = taskBio12_lm))
+siwadata$precipPredLM <- predSiwBio12LM$response
 
+## Add predictos to the Siwaliks fossil data (original one with all the variables)
+siwadata$precipPredRF <- predSiwBio12RF$response
+siwadata$precipPredSCAM <- predSiwBio12SCAM$response
+siwadata$precipPredSVM <- predSiwBio12SVM$response
+siwadata$precipPredGBM <- predSiwBio12GBM$response
+siwadata$precipPredMARS <- predSiwBio12MARS$response
+siwadata$precipPredGAM <- predSiwBio12GAM$response
+siwadata$precipPredXGB <- predSiwBio12XGB$response
+siwadata$precipPredLM <- predSiwBio12LM$response
+
+colnames(siwadata)
+## Calculate the ensemble as a median of relevant model predictions
+siwadata$ensemblePrec <- rowMeans(siwadata[, 22:27]) ## Let's leave XGB out
 
 ## The same for Tann
 ### TANN
-
 
 predSiwBio1RF = as.data.table(learner_rf_finT$predict_newdata(newdata = siwadata2, task = taskBio1))
 predSiwBio1SCAM = as.data.table(learner_scamT$predict_newdata(newdata = siwadata2, task = taskBio1))
@@ -404,6 +543,8 @@ predSiwBio1GBM = as.data.table(learner_gbm_finT$predict_newdata(newdata = siwada
 predSiwBio1MARS = as.data.table(learner_mars_finT$predict_newdata(newdata = siwadata2, task = taskBio1))
 predSiwBio1GAM = as.data.table(learner_gamT$predict_newdata(newdata = siwadata2, task = taskBio1))
 predSiwBio1XGB = as.data.table(learner_xgb_finT$predict_newdata(newdata = siwadata2, task = taskBio1))
+## MAT linear 
+predSiwBio1LM = as.data.table(learner_lm_mat$predict_newdata(newdata = siwadata2, task = taskBio1))
 
 ## Add predictions to the data
 siwadata$tempPredRF <- predSiwBio1RF$response
@@ -413,41 +554,9 @@ siwadata$tempPredGBM <- predSiwBio1GBM$response
 siwadata$tempPredMARS <-  predSiwBio1MARS$response
 siwadata$tempPredGAM <- predSiwBio1GAM$response
 siwadata$tempPredXGB <- predSiwBio1XGB$response
-
+siwadata$tempPredLM <- predSiwBio1LM$response
 names(siwadata)
-siwadata$ensembleTemp <- rowMeans(siwadata[, 22:27]) ## XGB out
-
-
-
-##################################################################
-## BREAK-POINT ANALYSIS
-## Estimate break-points in the trend using "segmented" package
-# Detections of break points
-
-lmTemp <- lm(ensembleTemp~AVERAGE.AGE, data=siwadata)
-seg_Temp <- segmented(lmTemp, npsi=2)
-summary(seg_Temp)
-
-lmPrec <- lm(ensemblePrec~AVERAGE.AGE, data=siwadata)
-seg_Prec <- segmented(lmPrec, npsi=2)
-summary(seg_Prec)
-
-
-#######################################################
-
-## Hypsodonty-only precipitation model
-## The most simplest (and maybe most robust) precipitation model
-## This is based on scam
-dataBio12HYP <- dataBio12[, c("BIO12_Mean", "HYP")]
-scamM <- scam(BIO12_Mean ~ s(HYP, bs="mpd"), data=dataBio12HYP)
-
-dataBio12HYP$Preds <- scamM$fitted.values
-
-siwadata$precipHYP <- predict(scamM, newdata=siwadata)
-
-
-
-#######################################################
+siwadata$ensembleTemp <- rowMeans(siwadata[, 30:35]) ## XGB out
 
 #### PLOTTING
 
@@ -610,23 +719,6 @@ plot(seg_Prec, add=TRUE)
 lines(seg_Prec)
 axis(1, at=seq(3, 22, 1))
 text(17, 700, "Ensemble prediction Pann (mm)")
-
-###########################
-## This plots the relationship between hypsodonty and Pann in the modern training data
-## as well as the predicted precipitation based onl on hypsodonty. 
-## The prediction is based on scam model
-par(mfrow=c(2,1), mar=c(4,5,3,1))
-plot(dataBio12$HYP, dataBio12$BIO12_Mean, xlab="HYP", ylab="Pann (mm)",
-main="SCAM fit (Pann ~ HYP) in modern data (present natural)")
-with(dataBio12HYP[order(dataBio12HYP$HYP),],lines(Preds~HYP, col="red", lwd=2))
-
-with(siwadata, plot(AVERAGE.AGE*-1, precipHYP, xaxt="n", 
-xlab="Age (Ma)", ylab="Pann (mm)", las=1, main="Predicted precipitation"))
-text(- 17, 500, "scam based only on HYP")
-#lines(lowess(siwadata$AVERAGE.AGE*-1, siwadata$tempPredGAM, f=0.5))
-axis(1, at=seq(-20,-5, 5), lab=seq(20, 5, -5))
-
-
 
 dev.off() ## don't run this unless you want to save tall these plots in to single file (see above).
 
