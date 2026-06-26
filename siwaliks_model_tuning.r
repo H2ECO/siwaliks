@@ -24,7 +24,7 @@ library(gridExtra)
 library(iml)
 
 ## Set the working directory
-setwd("~/pCloudDrive/projects/siwaliks")
+
 
 
 ## Read in the training data (present natural with 4000m altitude cut-off)
