@@ -38,12 +38,8 @@ library(dplyr)
 library(future)
 ## Set the working directory
 
-setwd("C:/LocalData/zubaid/OneDrive - University of Helsinki/SIWALIKS/siwaliks_preds")
-
-
 ## Fossil data without bhugti hills
-siwadata <- read.csv("./data/dat_final4.csv")
-
+siwadata <- read.csv("./data/dat_final5.csv")
 
 ## Training data
 
@@ -398,8 +394,8 @@ siwadata$precipPredXGB <- predSiwBio12XGB$response
 siwadata$ensemblePrec <- rowMeans(siwadata[, 19:24]) ## Let's leave XGB out
 
 #siwadata <- siwadata[ , -c(15, 19)]
-#readr::write_csv(siwadata,'C:/LocalData/zubaid/OneDrive - University of Helsinki/SIWALIKS/analysis_miikka/re_siwaliks/outputs//siwadata.csv')
 
+write.csv(siwadata, "output/siwadata.csv")
 ## The same for Tann
 ### TANN
 
